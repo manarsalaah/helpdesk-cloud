@@ -2,6 +2,7 @@
 
 ## Schéma d'architecture
 
+![Schéma d'architecture HelpDesk Cloud](architecture.jpg)
 
 Flux :
 1. Les utilisateurs accèdent à l'application via Internet et l'Internet Gateway.
