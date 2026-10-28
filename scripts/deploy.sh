@@ -33,4 +33,4 @@ echo
 echo "=== Deploiement termine ==="
 aws cloudformation describe-stacks --region "$REGION" --stack-name "${PROJECT}-compute" \
   --query "Stacks[0].Outputs[?OutputKey=='AppUrl'].OutputValue" --output text
-echo "(attendre ~2 min que le User Data installe Flask)"
+echo "(attendre ~2 min que le User Data installe Node.js)"

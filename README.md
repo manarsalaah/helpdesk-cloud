@@ -5,7 +5,7 @@ Projet de semestre ING-4-CIM — Sabrine Trabelsi, Manar Salah, Cyrine Messaoud.
 
 ## Architecture
 
-Internet → Internet Gateway → ALB (sous-réseaux publics) → EC2 Flask en Auto Scaling sur 2 AZ → RDS PostgreSQL (sous-réseaux privés).
+Internet → Internet Gateway → ALB (sous-réseaux publics) → EC2 (Next.js + NestJS) en Auto Scaling sur 2 AZ → RDS PostgreSQL (sous-réseaux privés).
 S3 privé pour les pièces jointes, CloudWatch pour la supervision, CloudFormation pour l'IaC.
 Détails et justifications : [docs/L2-architecture-cout.md](docs/L2-architecture-cout.md).
 

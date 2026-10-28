@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: HelpDesk Cloud - L3 - Premiere instance EC2 (backend Flask minimal, sous-reseau public)
+Description: HelpDesk Cloud - L3 - Premiere instance EC2 (serveur Node.js minimal, sous-reseau public)
 
 Parameters:
   ProjectName:
@@ -43,44 +43,38 @@ Resources:
         Fn::Base64: |
           #!/bin/bash
           set -e
-          dnf install -y python3-pip
-          pip3 install flask
+          dnf install -y nodejs
           mkdir -p /opt/helpdesk
-          cat > /opt/helpdesk/app.py <<'PYEOF'
-          import urllib.request
-          from flask import Flask, jsonify
-
-          app = Flask(__name__)
-          IMDS = "http://169.254.169.254/latest/"
-
-          def imds(path):
-              req = urllib.request.Request(
-                  IMDS + "api/token", method="PUT",
-                  headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
-              token = urllib.request.urlopen(req, timeout=2).read().decode()
-              req = urllib.request.Request(
-                  IMDS + "meta-data/" + path,
-                  headers={"X-aws-ec2-metadata-token": token})
-              return urllib.request.urlopen(req, timeout=2).read().decode()
-
-          @app.route("/")
-          def home():
-              return "HelpDesk Cloud - instance %s (%s)\n" % (
-                  imds("instance-id"), imds("placement/availability-zone"))
-
-          @app.route("/health")
-          def health():
-              return jsonify(status="ok")
-
-          app.run(host="0.0.0.0", port=80)
-          PYEOF
+          cat > /opt/helpdesk/server.js <<'JSEOF'
+          const http = require("http");
+          const IMDS = "http://169.254.169.254/latest/";
+          async function imds(path) {
+            const t = await (await fetch(IMDS + "api/token", {
+              method: "PUT",
+              headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" },
+            })).text();
+            return (await fetch(IMDS + "meta-data/" + path, {
+              headers: { "X-aws-ec2-metadata-token": t },
+            })).text();
+          }
+          http.createServer(async (req, res) => {
+            if (req.url === "/health" || req.url === "/api/health") {
+              res.writeHead(200, { "Content-Type": "application/json" });
+              return res.end(JSON.stringify({ status: "ok" }));
+            }
+            const id = await imds("instance-id");
+            const az = await imds("placement/availability-zone");
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("HelpDesk Cloud - instance " + id + " (" + az + ")\n");
+          }).listen(80);
+          JSEOF
           cat > /etc/systemd/system/helpdesk.service <<'SVCEOF'
           [Unit]
           Description=HelpDesk Cloud backend
           After=network-online.target
 
           [Service]
-          ExecStart=/usr/bin/python3 /opt/helpdesk/app.py
+          ExecStart=/usr/bin/node /opt/helpdesk/server.js
           Restart=always
 
           [Install]

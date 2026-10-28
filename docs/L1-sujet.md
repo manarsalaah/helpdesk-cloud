@@ -28,12 +28,12 @@ Le projet est avant tout un projet d'infrastructure : l'application est la charg
 
 | Composant | Technologie | Rôle |
 | --- | --- | --- |
-| Frontend | HTML/JS (à confirmer : React) | Interface utilisateur |
-| Backend | Python Flask (API REST) | Logique métier, authentification, tickets |
+| Frontend | Next.js (React) | Interface utilisateur |
+| Backend | NestJS (API REST, Node.js) | Logique métier, authentification, tickets |
 | Base de données | PostgreSQL (Amazon RDS) | Persistance relationnelle |
 | Stockage objet | Amazon S3 (bucket privé) | Pièces jointes |
 
-> À valider en équipe : la façon de séparer le frontend du backend (ex. Nginx servant le frontend et relayant `/api` vers Flask sur chaque EC2), afin de respecter l'exigence de 3 composants distincts qui communiquent.
+> Sur chaque EC2, Nginx reçoit le trafic de l'ALB sur le port 80 : il envoie `/` vers Next.js (frontend) et `/api` vers NestJS (API), qui communique avec PostgreSQL (RDS). Trois composants distincts qui communiquent : frontend, API, base de données.
 
 ## Objectifs non fonctionnels
 

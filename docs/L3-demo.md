@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | helpdesk-network | `infra/network.yaml` | VPC, IGW, 2 sous-réseaux publics + 2 privés (2 AZ), tables de routage, endpoint S3 |
 | helpdesk-security | `infra/security.yaml` | SG ALB, SG app, SG RDS |
-| helpdesk-compute | `infra/compute.yaml` | 1 instance EC2 t3.micro (Flask minimal via User Data) |
+| helpdesk-compute | `infra/compute.yaml` | 1 instance EC2 t3.micro (serveur Node.js minimal via User Data) |
 
 ## Avant la présentation (à faire AVANT la salle)
 
