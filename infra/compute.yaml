@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HelpDesk Cloud - L3 - Premiere instance EC2 (backend Flask minimal, sous-reseau public)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+  InstanceType:
+    Type: String
+    Default: t3.micro
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  InstanceProfileName:
+    Type: String
+    Default: LabInstanceProfile
+    Description: Profil d'instance fourni par AWS Academy (permet SSM, CloudWatch, S3)
+
+Resources:
+  FirstInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      SubnetId: { "Fn::ImportValue": !Sub "${ProjectName}-PublicSubnetAId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-AppSgId" }
+      IamInstanceProfile: !Ref InstanceProfileName
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 8
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-app-1" }
+        - { Key: Project, Value: !Ref ProjectName }
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+          dnf install -y python3-pip
+          pip3 install flask
+          mkdir -p /opt/helpdesk
+          cat > /opt/helpdesk/app.py <<'PYEOF'
+          import urllib.request
+          from flask import Flask, jsonify
+
+          app = Flask(__name__)
+          IMDS = "http://169.254.169.254/latest/"
+
+          def imds(path):
+              req = urllib.request.Request(
+                  IMDS + "api/token", method="PUT",
+                  headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+              token = urllib.request.urlopen(req, timeout=2).read().decode()
+              req = urllib.request.Request(
+                  IMDS + "meta-data/" + path,
+                  headers={"X-aws-ec2-metadata-token": token})
+              return urllib.request.urlopen(req, timeout=2).read().decode()
+
+          @app.route("/")
+          def home():
+              return "HelpDesk Cloud - instance %s (%s)\n" % (
+                  imds("instance-id"), imds("placement/availability-zone"))
+
+          @app.route("/health")
+          def health():
+              return jsonify(status="ok")
+
+          app.run(host="0.0.0.0", port=80)
+          PYEOF
+          cat > /etc/systemd/system/helpdesk.service <<'SVCEOF'
+          [Unit]
+          Description=HelpDesk Cloud backend
+          After=network-online.target
+
+          [Service]
+          ExecStart=/usr/bin/python3 /opt/helpdesk/app.py
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+          systemctl daemon-reload
+          systemctl enable --now helpdesk
+
+Outputs:
+  InstanceId:
+    Value: !Ref FirstInstance
+  PublicIp:
+    Value: !GetAtt FirstInstance.PublicIp
+  AppUrl:
+    Value: !Sub "http://${FirstInstance.PublicIp}/"
