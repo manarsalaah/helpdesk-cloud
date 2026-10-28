@@ -2,7 +2,6 @@
 
 ## Schéma d'architecture
 
-Ajouter l'image du schéma dans `docs/architecture.png`.
 
 Flux :
 1. Les utilisateurs accèdent à l'application via Internet et l'Internet Gateway.
