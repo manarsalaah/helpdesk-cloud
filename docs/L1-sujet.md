@@ -41,4 +41,4 @@ Haute disponibilité (2 AZ, Auto Scaling, health checks), sécurité (segmentati
 
 ## Dépôt Git
 
-`helpdesk-cloud` — URL : _à compléter_
+`helpdesk-cloud` — URL : https://github.com/manarsalaah/helpdesk-cloud.git
