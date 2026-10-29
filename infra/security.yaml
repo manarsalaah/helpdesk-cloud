@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: HelpDesk Cloud - L3 - Security Groups (ALB, application, RDS)
+Description: HelpDesk Cloud L3 Security Groups
 
 Parameters:
   ProjectName:
@@ -8,13 +8,9 @@ Parameters:
   AppPort:
     Type: Number
     Default: 80
-    Description: Port HTTP du backend sur les instances EC2
   DemoCidr:
     Type: String
     Default: ""
-    Description: >-
-      CIDR (ex. 41.xx.xx.xx/32) autorise a joindre directement l'instance
-      pour la demo L3, avant la mise en place de l'ALB. Laisser vide pour desactiver.
 
 Conditions:
   HasDemoCidr: !Not [!Equals [!Ref DemoCidr, ""]]
@@ -23,14 +19,14 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB - HTTP 80 depuis Internet
+      GroupDescription: ALB HTTP access
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: HTTP depuis Internet
+          Description: HTTP from Internet
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-alb-sg" }
         - { Key: Project, Value: !Ref ProjectName }
@@ -38,19 +34,18 @@ Resources:
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: EC2 backend - trafic uniquement depuis le SG de ALB (aucun SSH, acces admin via SSM)
+      GroupDescription: Application backend access
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: !Ref AppPort
           ToPort: !Ref AppPort
           SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: Trafic applicatif depuis ALB
+          Description: Application traffic from ALB
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-app-sg" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  # Regle temporaire pour la demo L3 (avant l'ALB) : a retirer en passant DemoCidr=""
   AppDemoIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: HasDemoCidr
@@ -60,19 +55,19 @@ Resources:
       FromPort: !Ref AppPort
       ToPort: !Ref AppPort
       CidrIp: !Ref DemoCidr
-      Description: Demo L3 - acces direct depuis IP equipe
+      Description: Temporary demo access
 
   RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: RDS PostgreSQL - 5432 uniquement depuis les instances applicatives
+      GroupDescription: PostgreSQL database access
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref AppSecurityGroup
-          Description: PostgreSQL depuis les EC2
+          Description: PostgreSQL from application
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-rds-sg" }
         - { Key: Project, Value: !Ref ProjectName }
