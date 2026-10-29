@@ -45,7 +45,7 @@ Resources:
           FromPort: !Ref AppPort
           ToPort: !Ref AppPort
           SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: Trafic applicatif depuis l'ALB
+          Description: Trafic applicatif depuis ALB
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-app-sg" }
         - { Key: Project, Value: !Ref ProjectName }
@@ -60,7 +60,7 @@ Resources:
       FromPort: !Ref AppPort
       ToPort: !Ref AppPort
       CidrIp: !Ref DemoCidr
-      Description: Demo L3 - acces direct depuis l'IP de l'equipe
+      Description: Demo L3 - acces direct depuis IP equipe
 
   RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
