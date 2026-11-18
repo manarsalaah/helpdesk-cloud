@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HelpDesk Cloud - Endpoints d'interface (ssm, ssmmessages, ec2messages, secretsmanager, logs, monitoring), ENI dans les sous-reseaux backend, Private DNS
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+
+Resources:
+  EndpointSsm:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }
+
+  EndpointSsmMessages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }
+
+  EndpointEc2Messages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }
+
+  EndpointSecretsManager:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }
+
+  EndpointLogs:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }
+
+  EndpointMonitoring:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.monitoring"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgVpceId" }

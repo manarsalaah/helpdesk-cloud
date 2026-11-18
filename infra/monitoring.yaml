@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "HelpDesk Cloud - Supervision v3 (alarmes CloudWatch : sante des cibles, CPU des ASG, RDS)"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+
+Resources:
+  FrontendNoHealthyHosts:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-frontend-no-healthy-hosts"
+      AlarmDescription: Aucune cible saine derriere le load balancer (frontend)
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: TargetGroup, Value: { "Fn::ImportValue": !Sub "${ProjectName}-FrontendTgFullName" } }
+        - { Name: LoadBalancer, Value: { "Fn::ImportValue": !Sub "${ProjectName}-PublicAlbFullName" } }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  FrontendCpuHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-frontend-cpu-high"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - { Name: AutoScalingGroupName, Value: { "Fn::ImportValue": !Sub "${ProjectName}-FrontendAsgName" } }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  BackendNoHealthyHosts:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-backend-no-healthy-hosts"
+      AlarmDescription: Aucune cible saine derriere le load balancer (backend)
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: TargetGroup, Value: { "Fn::ImportValue": !Sub "${ProjectName}-BackendTgFullName" } }
+        - { Name: LoadBalancer, Value: { "Fn::ImportValue": !Sub "${ProjectName}-InternalAlbFullName" } }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  BackendCpuHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-backend-cpu-high"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - { Name: AutoScalingGroupName, Value: { "Fn::ImportValue": !Sub "${ProjectName}-BackendAsgName" } }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  RdsCpuHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-cpu-high"
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - { Name: DBInstanceIdentifier, Value: { "Fn::ImportValue": !Sub "${ProjectName}-DbInstanceId" } }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  RdsLowStorage:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-low-storage"
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions:
+        - { Name: DBInstanceIdentifier, Value: { "Fn::ImportValue": !Sub "${ProjectName}-DbInstanceId" } }
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2000000000
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching

@@ -1,5 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: HelpDesk Cloud - L3 - Reseau (VPC, sous-reseaux publics/prives sur 2 AZ, routage, endpoint S3)
+Description: HelpDesk Cloud - Reseau v3 (VPC, 10 sous-reseaux sur 2 AZ, IGW, 2 NAT GW, routage par AZ, endpoint S3)
+
+# Plan d'adressage (VPC /16 decoupe en /24, l'index = 3e octet) :
+#   1,2   public (ALB public, NAT GW)      11,12 frontend (Next.js)
+#   41,42 ALB interne                      21,22 backend (NestJS + endpoints d'interface)
+#   31,32 donnees (RDS, aucune route sortante)
 
 Parameters:
   ProjectName:
@@ -8,18 +13,6 @@ Parameters:
   VpcCidr:
     Type: String
     Default: 10.0.0.0/16
-  PublicSubnetACidr:
-    Type: String
-    Default: 10.0.1.0/24
-  PublicSubnetBCidr:
-    Type: String
-    Default: 10.0.2.0/24
-  PrivateSubnetACidr:
-    Type: String
-    Default: 10.0.11.0/24
-  PrivateSubnetBCidr:
-    Type: String
-    Default: 10.0.12.0/24
 
 Resources:
   Vpc:
@@ -45,13 +38,13 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-  # ---------- Sous-reseaux publics (ALB + EC2) ----------
+  # ---------- Sous-reseaux ----------
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [0, !GetAZs ""]
-      CidrBlock: !Ref PublicSubnetACidr
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 256, 8]]
       MapPublicIpOnLaunch: true
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-public-a" }
@@ -62,33 +55,135 @@ Resources:
     Properties:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [1, !GetAZs ""]
-      CidrBlock: !Ref PublicSubnetBCidr
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 256, 8]]
       MapPublicIpOnLaunch: true
       Tags:
         - { Key: Name, Value: !Sub "${ProjectName}-public-b" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  # ---------- Sous-reseaux prives (RDS) ----------
-  PrivateSubnetA:
+  FrontendSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [0, !GetAZs ""]
-      CidrBlock: !Ref PrivateSubnetACidr
+      CidrBlock: !Select [11, !Cidr [!Ref VpcCidr, 256, 8]]
       MapPublicIpOnLaunch: false
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-private-a" }
+        - { Key: Name, Value: !Sub "${ProjectName}-frontend-a" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  PrivateSubnetB:
+  FrontendSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [1, !GetAZs ""]
-      CidrBlock: !Ref PrivateSubnetBCidr
+      CidrBlock: !Select [12, !Cidr [!Ref VpcCidr, 256, 8]]
       MapPublicIpOnLaunch: false
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-private-b" }
+        - { Key: Name, Value: !Sub "${ProjectName}-frontend-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  LbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [41, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-lb-int-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  LbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [42, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-lb-int-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  BackendSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [21, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-backend-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  BackendSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [22, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-backend-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  DataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [31, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-data-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  DataSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [32, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-data-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # ---------- NAT Gateways (une par AZ, dans les sous-reseaux publics) ----------
+  NatEipA:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-nat-eip-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-nat-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-nat-eip-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-nat-b" }
         - { Key: Project, Value: !Ref ProjectName }
 
   # ---------- Routage ----------
@@ -120,28 +215,97 @@ Resources:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
-  # Table privee : AUCUNE route vers Internet (pas de NAT Gateway, voir docs/L2)
-  PrivateRouteTable:
+  # rt-private-a / rt-private-b : frontend + ALB interne + backend d'une AZ, sortie Internet via la NAT GW de la MEME AZ
+  PrivateRouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-private-rt" }
+        - { Key: Name, Value: !Sub "${ProjectName}-rt-private-a" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  PrivateSubnetARouteAssoc:
+  PrivateDefaultRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  FrontendSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PrivateSubnetA
-      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref FrontendSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
 
-  PrivateSubnetBRouteAssoc:
+  LbSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PrivateSubnetB
-      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref LbSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
 
-  # Endpoint de passerelle S3 : gratuit, trafic S3 sans passer par Internet
+  BackendSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-rt-private-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  PrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  FrontendSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FrontendSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  LbSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref LbSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  BackendSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  # Couche donnees : table SANS aucune route (ni IGW, ni NAT)
+  DataRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-rt-data" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  DataSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetA
+      RouteTableId: !Ref DataRouteTable
+
+  DataSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetB
+      RouteTableId: !Ref DataRouteTable
+
+  # ---------- Endpoint de passerelle S3 (tables rt-private-a et rt-private-b) ----------
+  # La policy autorise le bucket applicatif ET les depots Amazon Linux (dnf passe par S3) :
+  # sans ca, "dnf install" echoue des qu'on restreint la policy au seul bucket applicatif.
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -149,22 +313,60 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       VpcEndpointType: Gateway
       RouteTableIds:
-        - !Ref PublicRouteTable
-        - !Ref PrivateRouteTable
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AppBucket
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${ProjectName}-attachments-${AWS::AccountId}-${AWS::Region}"
+              - !Sub "arn:aws:s3:::${ProjectName}-attachments-${AWS::AccountId}-${AWS::Region}/*"
+          - Sid: AmazonLinuxRepos
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource:
+              - !Sub "arn:aws:s3:::al2023-repos-${AWS::Region}-de612dc2/*"
+              - "arn:aws:s3:::amazonlinux-2-repos-*/*"
 
 Outputs:
   VpcId:
     Value: !Ref Vpc
     Export: { Name: !Sub "${ProjectName}-VpcId" }
+  VpcCidr:
+    Value: !GetAtt Vpc.CidrBlock
+    Export: { Name: !Sub "${ProjectName}-VpcCidr" }
   PublicSubnetAId:
     Value: !Ref PublicSubnetA
     Export: { Name: !Sub "${ProjectName}-PublicSubnetAId" }
   PublicSubnetBId:
     Value: !Ref PublicSubnetB
     Export: { Name: !Sub "${ProjectName}-PublicSubnetBId" }
-  PrivateSubnetAId:
-    Value: !Ref PrivateSubnetA
-    Export: { Name: !Sub "${ProjectName}-PrivateSubnetAId" }
-  PrivateSubnetBId:
-    Value: !Ref PrivateSubnetB
-    Export: { Name: !Sub "${ProjectName}-PrivateSubnetBId" }
+  FrontendSubnetAId:
+    Value: !Ref FrontendSubnetA
+    Export: { Name: !Sub "${ProjectName}-FrontendSubnetAId" }
+  FrontendSubnetBId:
+    Value: !Ref FrontendSubnetB
+    Export: { Name: !Sub "${ProjectName}-FrontendSubnetBId" }
+  LbSubnetAId:
+    Value: !Ref LbSubnetA
+    Export: { Name: !Sub "${ProjectName}-LbSubnetAId" }
+  LbSubnetBId:
+    Value: !Ref LbSubnetB
+    Export: { Name: !Sub "${ProjectName}-LbSubnetBId" }
+  BackendSubnetAId:
+    Value: !Ref BackendSubnetA
+    Export: { Name: !Sub "${ProjectName}-BackendSubnetAId" }
+  BackendSubnetBId:
+    Value: !Ref BackendSubnetB
+    Export: { Name: !Sub "${ProjectName}-BackendSubnetBId" }
+  DataSubnetAId:
+    Value: !Ref DataSubnetA
+    Export: { Name: !Sub "${ProjectName}-DataSubnetAId" }
+  DataSubnetBId:
+    Value: !Ref DataSubnetB
+    Export: { Name: !Sub "${ProjectName}-DataSubnetBId" }

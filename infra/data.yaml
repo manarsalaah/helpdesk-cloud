@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HelpDesk Cloud - Donnees v3 (RDS PostgreSQL Multi-AZ en sous-reseaux data, bucket S3 prive SSE-KMS)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+  DbMultiAz:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "true = conforme au schema (primaire + standby). false = economie en dev (divise le cout RDS par 2)."
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+  DbEngineVersion:
+    Type: String
+    Default: ""
+    Description: "Version PostgreSQL (ex. 16.9). Vide = version par defaut proposee par RDS (evite une version obsolete epinglee)."
+
+Conditions:
+  HasEngineVersion: !Not [!Equals [!Ref DbEngineVersion, ""]]
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Sous-reseaux data A et B (couche 4)
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-DataSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-DataSubnetBId" }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # DeletionPolicy explicite : pour AWS::RDS::DBInstance la valeur par defaut est Snapshot,
+  # ce qui laisserait des snapshots facturables apres chaque destroy.
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-postgres"
+      Engine: postgres
+      EngineVersion: !If [HasEngineVersion, !Ref DbEngineVersion, !Ref "AWS::NoValue"]
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !Ref DbMultiAz
+      DBName: helpdesk
+      MasterUsername: helpdesk_admin
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgRdsId" }
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 1
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-postgres" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # Nom deterministe : le meme calcul est utilise dans la policy de l'endpoint S3 (network.yaml)
+  AttachmentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ProjectName}-attachments-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  AttachmentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AttachmentsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt AttachmentsBucket.Arn
+              - !Sub "${AttachmentsBucket.Arn}/*"
+            Condition:
+              Bool: { "aws:SecureTransport": "false" }
+
+Outputs:
+  DbEndpointAddress:
+    Description: Endpoint DNS unique (CNAME vers le primaire, bascule automatique)
+    Value: !GetAtt Database.Endpoint.Address
+    Export: { Name: !Sub "${ProjectName}-DbEndpointAddress" }
+  DbInstanceId:
+    Value: !Ref Database
+    Export: { Name: !Sub "${ProjectName}-DbInstanceId" }
+  DbSecretArn:
+    Description: Secret Secrets Manager (identifiants maitre) gere par RDS
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+    Export: { Name: !Sub "${ProjectName}-DbSecretArn" }
+  BucketName:
+    Value: !Ref AttachmentsBucket
+    Export: { Name: !Sub "${ProjectName}-BucketName" }

@@ -1,5 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: HelpDesk Cloud - L3 - Premiere instance EC2 (serveur Node.js minimal, sous-reseau public)
+Description: HelpDesk Cloud - Calcul v3 (Auto Scaling Group frontend Next.js + Auto Scaling Group backend NestJS, sous-reseaux prives)
+
+# Les applications ci-dessous sont des serveurs Node.js MINIMAUX (aucune dependance) qui servent
+# a valider toute la chaine reseau : CloudFront > ALB public > frontend > ALB interne > backend > RDS.
+# Remplacer le User Data par le deploiement du vrai code Next.js / NestJS quand il sera pret.
 
 Parameters:
   ProjectName:
@@ -14,79 +18,302 @@ Parameters:
   InstanceProfileName:
     Type: String
     Default: LabInstanceProfile
-    Description: Profil d'instance fourni par AWS Academy (permet SSM, CloudWatch, S3)
+    Description: Profil d'instance fourni par AWS Academy (SSM, CloudWatch, S3, Secrets Manager)
+  AsgMinSize:
+    Type: Number
+    Default: 2
+  AsgMaxSize:
+    Type: Number
+    Default: 3
+  FrontendPort:
+    Type: Number
+    Default: 3000
+  BackendPort:
+    Type: Number
+    Default: 3001
+  InternalCertificateArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  InternalHttps: !Not [!Equals [!Ref InternalCertificateArn, ""]]
 
 Resources:
-  FirstInstance:
-    Type: AWS::EC2::Instance
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      InstanceType: !Ref InstanceType
-      ImageId: !Ref AmiId
-      SubnetId: { "Fn::ImportValue": !Sub "${ProjectName}-PublicSubnetAId" }
-      SecurityGroupIds:
-        - { "Fn::ImportValue": !Sub "${ProjectName}-AppSgId" }
-      IamInstanceProfile: !Ref InstanceProfileName
-      MetadataOptions:
-        HttpTokens: required
-        HttpEndpoint: enabled
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeType: gp3
-            VolumeSize: 8
-            Encrypted: true
-            DeleteOnTermination: true
+      LogGroupName: !Sub "/${ProjectName}/frontend"
+      RetentionInDays: 7
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/backend"
+      RetentionInDays: 7
+
+  # ===================== Couche 2 : Frontend (Next.js) =====================
+  FrontendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ProjectName}-lt-frontend"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name: !Ref InstanceProfileName
+        SecurityGroupIds:
+          - { "Fn::ImportValue": !Sub "${ProjectName}-SgFrontendId" }
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          HttpPutResponseHopLimit: 1
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeType: gp3, VolumeSize: 8, Encrypted: true, DeleteOnTermination: true }
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - { Key: Name, Value: !Sub "${ProjectName}-frontend" }
+              - { Key: Project, Value: !Ref ProjectName }
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              dnf install -y nodejs amazon-cloudwatch-agent
+              mkdir -p /opt/helpdesk /var/log/helpdesk
+              cat > /opt/helpdesk/server.js <<'JSEOF'
+              const http = require("http");
+              const IMDS = "http://169.254.169.254/latest/";
+              async function imds(path) {
+                const t = await (await fetch(IMDS + "api/token", {
+                  method: "PUT",
+                  headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" },
+                })).text();
+                return (await fetch(IMDS + "meta-data/" + path, {
+                  headers: { "X-aws-ec2-metadata-token": t },
+                })).text();
+              }
+              http.createServer(async function (req, res) {
+                try {
+                  if (req.url === "/health") {
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    return res.end(JSON.stringify({ status: "ok" }));
+                  }
+                  const id = await imds("instance-id");
+                  const az = await imds("placement/availability-zone");
+                  let api;
+                  try {
+                    const r = await fetch(process.env.API_URL + "/api/info", { signal: AbortSignal.timeout(3000) });
+                    api = await r.text();
+                  } catch (e) {
+                    api = "API injoignable : " + e.message;
+                  }
+                  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+                  res.end("HelpDesk Cloud - FRONTEND " + id + " (" + az + ")\n\nReponse du backend via l'ALB interne :\n" + api + "\n");
+                } catch (e) {
+                  res.writeHead(500); res.end("erreur : " + e.message);
+                }
+              }).listen(Number(process.env.PORT));
+              JSEOF
+              cat > /etc/systemd/system/helpdesk.service <<'SVCEOF'
+              [Unit]
+              Description=HelpDesk Cloud frontend
+              After=network-online.target
+
+              [Service]
+              Environment=PORT=${FrontendPort}
+              Environment=API_URL=${Scheme}://${InternalAlbDns}
+              ExecStart=/usr/bin/node /opt/helpdesk/server.js
+              StandardOutput=append:/var/log/helpdesk/app.log
+              StandardError=append:/var/log/helpdesk/app.log
+              Restart=always
+
+              [Install]
+              WantedBy=multi-user.target
+              SVCEOF
+              cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json <<'CWEOF'
+              {"logs":{"logs_collected":{"files":{"collect_list":[{"file_path":"/var/log/helpdesk/app.log","log_group_name":"${LogGroup}","log_stream_name":"{instance_id}"}]}}}}
+              CWEOF
+              systemctl daemon-reload
+              systemctl enable --now helpdesk
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+            - Scheme: !If [InternalHttps, https, http]
+              InternalAlbDns: { "Fn::ImportValue": !Sub "${ProjectName}-InternalAlbDns" }
+              LogGroup: !Ref FrontendLogGroup
+
+  FrontendAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT2M
+    Properties:
+      AutoScalingGroupName: !Sub "${ProjectName}-asg-frontend"
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      DesiredCapacity: !Ref AsgMinSize
+      VPCZoneIdentifier:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-FrontendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-FrontendSubnetBId" }
+      LaunchTemplate:
+        LaunchTemplateId: !Ref FrontendLaunchTemplate
+        Version: !GetAtt FrontendLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-FrontendTgArn" }
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 240
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-app-1" }
-        - { Key: Project, Value: !Ref ProjectName }
-      UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          set -e
-          dnf install -y nodejs
-          mkdir -p /opt/helpdesk
-          cat > /opt/helpdesk/server.js <<'JSEOF'
-          const http = require("http");
-          const IMDS = "http://169.254.169.254/latest/";
-          async function imds(path) {
-            const t = await (await fetch(IMDS + "api/token", {
-              method: "PUT",
-              headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" },
-            })).text();
-            return (await fetch(IMDS + "meta-data/" + path, {
-              headers: { "X-aws-ec2-metadata-token": t },
-            })).text();
-          }
-          http.createServer(async (req, res) => {
-            if (req.url === "/health" || req.url === "/api/health") {
-              res.writeHead(200, { "Content-Type": "application/json" });
-              return res.end(JSON.stringify({ status: "ok" }));
-            }
-            const id = await imds("instance-id");
-            const az = await imds("placement/availability-zone");
-            res.writeHead(200, { "Content-Type": "text/plain" });
-            res.end("HelpDesk Cloud - instance " + id + " (" + az + ")\n");
-          }).listen(80);
-          JSEOF
-          cat > /etc/systemd/system/helpdesk.service <<'SVCEOF'
-          [Unit]
-          Description=HelpDesk Cloud backend
-          After=network-online.target
+        - { Key: Name, Value: !Sub "${ProjectName}-frontend", PropagateAtLaunch: false }
+        - { Key: Project, Value: !Ref ProjectName, PropagateAtLaunch: true }
 
-          [Service]
-          ExecStart=/usr/bin/node /opt/helpdesk/server.js
-          Restart=always
+  FrontendScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref FrontendAsg
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification: { PredefinedMetricType: ASGAverageCPUUtilization }
+        TargetValue: 60
 
-          [Install]
-          WantedBy=multi-user.target
-          SVCEOF
-          systemctl daemon-reload
-          systemctl enable --now helpdesk
+  # ===================== Couche 3 : Backend (NestJS) =====================
+  BackendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ProjectName}-lt-backend"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name: !Ref InstanceProfileName
+        SecurityGroupIds:
+          - { "Fn::ImportValue": !Sub "${ProjectName}-SgBackendId" }
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          HttpPutResponseHopLimit: 1
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeType: gp3, VolumeSize: 8, Encrypted: true, DeleteOnTermination: true }
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - { Key: Name, Value: !Sub "${ProjectName}-backend" }
+              - { Key: Project, Value: !Ref ProjectName }
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              dnf install -y nodejs amazon-cloudwatch-agent
+              mkdir -p /opt/helpdesk /var/log/helpdesk
+              cat > /opt/helpdesk/server.js <<'JSEOF'
+              const http = require("http");
+              const net = require("net");
+              const IMDS = "http://169.254.169.254/latest/";
+              async function imds(path) {
+                const t = await (await fetch(IMDS + "api/token", {
+                  method: "PUT",
+                  headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" },
+                })).text();
+                return (await fetch(IMDS + "meta-data/" + path, {
+                  headers: { "X-aws-ec2-metadata-token": t },
+                })).text();
+              }
+              function dbCheck(host) {
+                return new Promise(function (resolve) {
+                  const s = net.connect({ host: host, port: 5432, timeout: 2000 });
+                  s.on("connect", function () { s.destroy(); resolve("joignable (TCP 5432)"); });
+                  s.on("timeout", function () { s.destroy(); resolve("timeout"); });
+                  s.on("error", function (e) { resolve("erreur " + e.code); });
+                });
+              }
+              http.createServer(async function (req, res) {
+                try {
+                  if (req.url === "/api/health") {
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    return res.end(JSON.stringify({ status: "ok" }));
+                  }
+                  const id = await imds("instance-id");
+                  const az = await imds("placement/availability-zone");
+                  const db = await dbCheck(process.env.DB_HOST);
+                  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+                  res.end("BACKEND " + id + " (" + az + ")\nRDS " + process.env.DB_HOST + " : " + db + "\nBucket S3 : " + process.env.BUCKET + "\n");
+                } catch (e) {
+                  res.writeHead(500); res.end("erreur : " + e.message);
+                }
+              }).listen(Number(process.env.PORT));
+              JSEOF
+              cat > /etc/systemd/system/helpdesk.service <<'SVCEOF'
+              [Unit]
+              Description=HelpDesk Cloud backend
+              After=network-online.target
+
+              [Service]
+              Environment=PORT=${BackendPort}
+              Environment=DB_HOST=${DbHost}
+              Environment=DB_SECRET_ARN=${DbSecretArn}
+              Environment=BUCKET=${Bucket}
+              Environment=AWS_REGION=${AWS::Region}
+              ExecStart=/usr/bin/node /opt/helpdesk/server.js
+              StandardOutput=append:/var/log/helpdesk/app.log
+              StandardError=append:/var/log/helpdesk/app.log
+              Restart=always
+
+              [Install]
+              WantedBy=multi-user.target
+              SVCEOF
+              cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json <<'CWEOF'
+              {"logs":{"logs_collected":{"files":{"collect_list":[{"file_path":"/var/log/helpdesk/app.log","log_group_name":"${LogGroup}","log_stream_name":"{instance_id}"}]}}}}
+              CWEOF
+              systemctl daemon-reload
+              systemctl enable --now helpdesk
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+            - DbHost: { "Fn::ImportValue": !Sub "${ProjectName}-DbEndpointAddress" }
+              DbSecretArn: { "Fn::ImportValue": !Sub "${ProjectName}-DbSecretArn" }
+              Bucket: { "Fn::ImportValue": !Sub "${ProjectName}-BucketName" }
+              LogGroup: !Ref BackendLogGroup
+
+  BackendAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT2M
+    Properties:
+      AutoScalingGroupName: !Sub "${ProjectName}-asg-backend"
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      DesiredCapacity: !Ref AsgMinSize
+      VPCZoneIdentifier:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendSubnetBId" }
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BackendLaunchTemplate
+        Version: !GetAtt BackendLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-BackendTgArn" }
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 240
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-backend", PropagateAtLaunch: false }
+        - { Key: Project, Value: !Ref ProjectName, PropagateAtLaunch: true }
+
+  BackendScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref BackendAsg
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification: { PredefinedMetricType: ASGAverageCPUUtilization }
+        TargetValue: 60
 
 Outputs:
-  InstanceId:
-    Value: !Ref FirstInstance
-  PublicIp:
-    Value: !GetAtt FirstInstance.PublicIp
-  AppUrl:
-    Value: !Sub "http://${FirstInstance.PublicIp}/"
+  FrontendAsgName:
+    Value: !Ref FrontendAsg
+    Export: { Name: !Sub "${ProjectName}-FrontendAsgName" }
+  BackendAsgName:
+    Value: !Ref BackendAsg
+    Export: { Name: !Sub "${ProjectName}-BackendAsgName" }

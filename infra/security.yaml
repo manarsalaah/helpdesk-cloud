@@ -1,84 +1,160 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: HelpDesk Cloud L3 Security Groups
+Description: HelpDesk Cloud - Securite v3 (SG-ALB-pub, SG-FE, SG-ALB-int, SG-BE, SG-RDS, SG-VPCE + secret d'en-tete d'origine CloudFront)
 
 Parameters:
   ProjectName:
     Type: String
     Default: helpdesk
-  AppPort:
+  CloudFrontPrefixListId:
+    Type: String
+    Description: ID de la prefix list geree com.amazonaws.global.cloudfront.origin-facing (fourni par deploy.sh)
+    AllowedPattern: "pl-[0-9a-f]+"
+  FrontendPort:
     Type: Number
-    Default: 80
-  DemoCidr:
+    Default: 3000
+  BackendPort:
+    Type: Number
+    Default: 3001
+  AlbCertificateArn:
     Type: String
     Default: ""
+    Description: Certificat ACM de l'ALB public. Vide = HTTP 80 entre CloudFront et l'ALB (voir README).
+  InternalCertificateArn:
+    Type: String
+    Default: ""
+    Description: Certificat ACM de l'ALB interne. Vide = HTTP 80 entre frontend et ALB interne (voir README).
 
 Conditions:
-  HasDemoCidr: !Not [!Equals [!Ref DemoCidr, ""]]
+  PublicHttps: !Not [!Equals [!Ref AlbCertificateArn, ""]]
+  InternalHttps: !Not [!Equals [!Ref InternalCertificateArn, ""]]
 
 Resources:
-  AlbSecurityGroup:
+  # 1. CloudFront -> ALB public : uniquement la prefix list CloudFront, aucune regle 0.0.0.0/0
+  SgAlbPublic:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB HTTP access
+      GroupDescription: ALB public - trafic depuis CloudFront uniquement
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP from Internet
+          FromPort: !If [PublicHttps, 443, 80]
+          ToPort: !If [PublicHttps, 443, 80]
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: Prefix list CloudFront origin-facing
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-alb-sg" }
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-alb-pub" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  AppSecurityGroup:
+  # 3. ALB public -> Frontend
+  SgFrontend:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Application backend access
+      GroupDescription: Frontend Next.js - depuis ALB public uniquement
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: !Ref AppPort
-          ToPort: !Ref AppPort
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: Application traffic from ALB
+          FromPort: !Ref FrontendPort
+          ToPort: !Ref FrontendPort
+          SourceSecurityGroupId: !Ref SgAlbPublic
+          Description: Port Next.js depuis SG-ALB-pub
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-app-sg" }
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-fe" }
         - { Key: Project, Value: !Ref ProjectName }
 
-  AppDemoIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Condition: HasDemoCidr
-    Properties:
-      GroupId: !Ref AppSecurityGroup
-      IpProtocol: tcp
-      FromPort: !Ref AppPort
-      ToPort: !Ref AppPort
-      CidrIp: !Ref DemoCidr
-      Description: Temporary demo access
-
-  RdsSecurityGroup:
+  # 4. Frontend -> ALB interne
+  SgAlbInternal:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: PostgreSQL database access
+      GroupDescription: ALB interne - depuis le frontend uniquement
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !If [InternalHttps, 443, 80]
+          ToPort: !If [InternalHttps, 443, 80]
+          SourceSecurityGroupId: !Ref SgFrontend
+          Description: BFF -> API depuis SG-FE
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-alb-int" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # 5. ALB interne -> Backend
+  SgBackend:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Backend NestJS - depuis ALB interne uniquement
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref BackendPort
+          ToPort: !Ref BackendPort
+          SourceSecurityGroupId: !Ref SgAlbInternal
+          Description: Port NestJS depuis SG-ALB-int
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-be" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # 6. Backend -> RDS
+  SgRds:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS PostgreSQL - depuis le backend uniquement
       VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
-          SourceSecurityGroupId: !Ref AppSecurityGroup
-          Description: PostgreSQL from application
+          SourceSecurityGroupId: !Ref SgBackend
+          Description: PostgreSQL depuis SG-BE
       Tags:
-        - { Key: Name, Value: !Sub "${ProjectName}-rds-sg" }
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-rds" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # 8. Endpoints d'interface : HTTPS 443 depuis SG-FE et SG-BE uniquement
+  SgVpce:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Endpoints interface - HTTPS depuis frontend et backend
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref SgFrontend, Description: HTTPS depuis SG-FE }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref SgBackend, Description: HTTPS depuis SG-BE }
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-sg-vpce" }
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # 2. Verification d'origine : valeur aleatoire generee par Secrets Manager (jamais dans Git).
+  # Pas de Name fixe : une suppression Secrets Manager garde le nom 7-30 jours et bloquerait le redeploiement.
+  OriginVerifySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Valeur de l'en-tete X-Origin-Verify ajoute par CloudFront et exige par l'ALB public
+      GenerateSecretString:
+        SecretStringTemplate: '{"header":"X-Origin-Verify"}'
+        GenerateStringKey: value
+        PasswordLength: 40
+        ExcludePunctuation: true
+      Tags:
         - { Key: Project, Value: !Ref ProjectName }
 
 Outputs:
-  AlbSecurityGroupId:
-    Value: !Ref AlbSecurityGroup
-    Export: { Name: !Sub "${ProjectName}-AlbSgId" }
-  AppSecurityGroupId:
-    Value: !Ref AppSecurityGroup
-    Export: { Name: !Sub "${ProjectName}-AppSgId" }
-  RdsSecurityGroupId:
-    Value: !Ref RdsSecurityGroup
-    Export: { Name: !Sub "${ProjectName}-RdsSgId" }
+  SgAlbPublicId:
+    Value: !Ref SgAlbPublic
+    Export: { Name: !Sub "${ProjectName}-SgAlbPublicId" }
+  SgFrontendId:
+    Value: !Ref SgFrontend
+    Export: { Name: !Sub "${ProjectName}-SgFrontendId" }
+  SgAlbInternalId:
+    Value: !Ref SgAlbInternal
+    Export: { Name: !Sub "${ProjectName}-SgAlbInternalId" }
+  SgBackendId:
+    Value: !Ref SgBackend
+    Export: { Name: !Sub "${ProjectName}-SgBackendId" }
+  SgRdsId:
+    Value: !Ref SgRds
+    Export: { Name: !Sub "${ProjectName}-SgRdsId" }
+  SgVpceId:
+    Value: !Ref SgVpce
+    Export: { Name: !Sub "${ProjectName}-SgVpceId" }
+  OriginVerifySecretArn:
+    Value: !Ref OriginVerifySecret
+    Export: { Name: !Sub "${ProjectName}-OriginVerifySecretArn" }

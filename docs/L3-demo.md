@@ -1,31 +1,28 @@
 # L3 — Réseau et socle de calcul : script de démonstration live
 
-## Ce qui est déployé (IaC uniquement, piles CloudFormation)
+## Ce qui est déployé (IaC uniquement, 8 piles CloudFormation)
 
-| Pile | Fichier | Ressources |
-| --- | --- | --- |
-| helpdesk-network | `infra/network.yaml` | VPC, IGW, 2 sous-réseaux publics + 2 privés (2 AZ), tables de routage, endpoint S3 |
-| helpdesk-security | `infra/security.yaml` | SG ALB, SG app, SG RDS |
-| helpdesk-compute | `infra/compute.yaml` | 1 instance EC2 t3.micro (serveur Node.js minimal via User Data) |
+Voir le tableau « Ordre des piles » du [README](../README.md) : réseau (VPC, 10 sous-réseaux, 2 NAT), sécurité (6 SG + secret d'origine), endpoints d'interface, données (RDS Multi-AZ + S3), ALB public/interne, ASG frontend/backend, CloudFront + WAF, alarmes CloudWatch.
 
 ## Avant la présentation (à faire AVANT la salle)
 
 1. Recharger les identifiants AWS Academy, `aws sts get-caller-identity`.
 2. Faire une répétition complète : `./scripts/deploy.sh` puis `./scripts/destroy.sh`.
-3. Tout relancer **10 minutes avant** de passer, pour que l'instance soit prête (2 min de User Data).
+3. Lancer `./scripts/deploy.sh` **30 minutes avant** de passer (CloudFront ≈ 10 min + RDS Multi-AZ ≈ 10-15 min + instances 3-5 min).
 
 ## Déroulé (≈ 5 min)
 
 1. Montrer le dépôt : `infra/`, `scripts/`.
-2. `./scripts/deploy.sh` (ou montrer le résultat si déjà lancé) — les 3 piles dans l'ordre.
-3. Console : VPC, 4 sous-réseaux sur 2 AZ, table publique (route 0.0.0.0/0 → IGW) vs table privée (aucune route Internet).
-4. Groupes de sécurité : EC2 n'accepte que l'ALB (+ l'IP de l'équipe pour la démo), RDS que le SG des EC2.
-5. Ouvrir l'URL de la pile `compute` : la page affiche l'ID d'instance et l'AZ ; `/health` répond `ok`.
-6. Justifier l'accès sortant (voir L2) : IGW + IP publique, pas de NAT Gateway, endpoint S3.
+2. `./scripts/deploy.sh` (ou montrer le résultat si déjà lancé) — les 8 piles dans l'ordre.
+3. Console : VPC, 10 sous-réseaux sur 2 AZ ; table publique (0.0.0.0/0 → IGW), `rt-private-a/b` (0.0.0.0/0 → NAT de la même AZ), table data (aucune route).
+4. Groupes de sécurité en chaîne : ALB public ← prefix list CloudFront ; FE ← ALB public ; ALB interne ← FE ; BE ← ALB interne ; RDS ← BE.
+5. Ouvrir l'URL CloudFront : la page affiche le frontend (ID, AZ) puis la réponse du backend via l'ALB interne et l'état de RDS. Appel direct de l'ALB public sans en-tête : 403.
+6. Justifier l'accès sortant : une NAT GW par AZ (résilience), endpoint S3 de passerelle, endpoints d'interface pour SSM/Secrets Manager/CloudWatch.
 7. `./scripts/destroy.sh` : montrer la destruction ordonnée et la vérification finale.
 
 ## Questions probables
 
-- Pourquoi pas de NAT ? → coût (+48 % horaire), voir L2.
+- Pourquoi 2 NAT et autant d'endpoints ? → résilience par AZ et pas de dépendance Internet pour l'administration ; contrepartie : ≈ 0,21 USD/h, voir « Coût » du README.
+- Pourquoi HTTP entre CloudFront et l'ALB ? → pas de domaine/certificat ACM dans le Learner Lab ; protégé par SG (prefix list) + en-tête secret.
 - Pourquoi pas de SSH ? → accès admin via SSM (`LabInstanceProfile`), aucun port d'administration ouvert.
 - Pourquoi CloudFormation ? → service natif AWS, aucun outil à installer, destruction propre pile par pile.

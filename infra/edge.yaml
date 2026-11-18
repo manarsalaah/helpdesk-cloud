@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HelpDesk Cloud - Edge v3 (CloudFront + WAF global, WAF regional sur l'ALB public)
+
+# CloudFront et son WAF (scope CLOUDFRONT) ne peuvent etre crees qu'en us-east-1 : c'est la region du projet.
+# Creation et suppression d'une distribution CloudFront : compter 5 a 15 minutes.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+  AlbCertificateArn:
+    Type: String
+    Default: ""
+    Description: Vide = CloudFront parle en HTTP a l'ALB (voir README)
+  RateLimit:
+    Type: Number
+    Default: 1000
+    Description: Requetes max par IP sur 5 minutes avant blocage
+
+Conditions:
+  PublicHttps: !Not [!Equals [!Ref AlbCertificateArn, ""]]
+
+Resources:
+  CloudFrontWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${ProjectName}-waf-cloudfront"
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: !Sub "${ProjectName}-waf-cloudfront" }
+      Rules:
+        - Name: RateLimit
+          Priority: 0
+          Action: { Block: {} }
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimit
+              AggregateKeyType: IP
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: CfRateLimit }
+        - Name: AWSCommonRuleSet
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesCommonRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: CfCommon }
+        - Name: AWSKnownBadInputs
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesKnownBadInputsRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: CfBadInputs }
+        - Name: AWSSqli
+          Priority: 3
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesSQLiRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: CfSqli }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  RegionalWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${ProjectName}-waf-alb"
+      Scope: REGIONAL
+      DefaultAction: { Allow: {} }
+      VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: !Sub "${ProjectName}-waf-alb" }
+      Rules:
+        - Name: RateLimit
+          Priority: 0
+          Action: { Block: {} }
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimit
+              AggregateKeyType: IP
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: AlbRateLimit }
+        - Name: AWSCommonRuleSet
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesCommonRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: AlbCommon }
+        - Name: AWSKnownBadInputs
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesKnownBadInputsRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: AlbBadInputs }
+        - Name: AWSSqli
+          Priority: 3
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesSQLiRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: AlbSqli }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  RegionalWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: { "Fn::ImportValue": !Sub "${ProjectName}-PublicAlbArn" }
+      WebACLArn: !GetAtt RegionalWebAcl.Arn
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${ProjectName} - point d'entree public"
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        WebACLId: !GetAtt CloudFrontWebAcl.Arn
+        Origins:
+          - Id: public-alb
+            DomainName: { "Fn::ImportValue": !Sub "${ProjectName}-PublicAlbDns" }
+            CustomOriginConfig:
+              OriginProtocolPolicy: !If [PublicHttps, https-only, http-only]
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginSSLProtocols: [TLSv1.2]
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Sub
+                  - "{{resolve:secretsmanager:${SecretArn}:SecretString:value}}"
+                  - SecretArn: { "Fn::ImportValue": !Sub "${ProjectName}-OriginVerifySecretArn" }
+        DefaultCacheBehavior:
+          TargetOriginId: public-alb
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          Compress: true
+          # Politiques gerees AWS : CachingDisabled et AllViewer (application dynamique, pas de cache)
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+
+Outputs:
+  CloudFrontDomain:
+    Value: !GetAtt Distribution.DomainName
+  AppUrl:
+    Value: !Sub "https://${Distribution.DomainName}/"

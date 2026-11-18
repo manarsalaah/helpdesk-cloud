@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HelpDesk Cloud - Load balancers v3 (ALB public + ALB interne, target groups, verification d'en-tete d'origine)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: helpdesk
+  FrontendPort:
+    Type: Number
+    Default: 3000
+  BackendPort:
+    Type: Number
+    Default: 3001
+  AlbCertificateArn:
+    Type: String
+    Default: ""
+  InternalCertificateArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  PublicHttps: !Not [!Equals [!Ref AlbCertificateArn, ""]]
+  PublicHttp: !Equals [!Ref AlbCertificateArn, ""]
+  InternalHttps: !Not [!Equals [!Ref InternalCertificateArn, ""]]
+  InternalHttp: !Equals [!Ref InternalCertificateArn, ""]
+
+Resources:
+  # ---------- ALB public (sous-reseaux publics) ----------
+  PublicAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb-public"
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgAlbPublicId" }
+      Subnets:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-PublicSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-PublicSubnetBId" }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-frontend"
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      Protocol: HTTP
+      Port: !Ref FrontendPort
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "30" }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  # Listener public : 403 par defaut, forward uniquement si l'en-tete secret ajoute par CloudFront est valide
+  PublicListenerHttps:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: PublicHttps
+    Properties:
+      LoadBalancerArn: !Ref PublicAlb
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref AlbCertificateArn
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig: { StatusCode: "403", ContentType: text/plain, MessageBody: Forbidden }
+
+  PublicListenerHttp:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: PublicHttp
+    Properties:
+      LoadBalancerArn: !Ref PublicAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig: { StatusCode: "403", ContentType: text/plain, MessageBody: Forbidden }
+
+  OriginRuleHttps:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: PublicHttps
+    Properties:
+      ListenerArn: !Ref PublicListenerHttps
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Sub
+                - "{{resolve:secretsmanager:${SecretArn}:SecretString:value}}"
+                - SecretArn: { "Fn::ImportValue": !Sub "${ProjectName}-OriginVerifySecretArn" }
+      Actions:
+        - { Type: forward, TargetGroupArn: !Ref FrontendTargetGroup }
+
+  OriginRuleHttp:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: PublicHttp
+    Properties:
+      ListenerArn: !Ref PublicListenerHttp
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Sub
+                - "{{resolve:secretsmanager:${SecretArn}:SecretString:value}}"
+                - SecretArn: { "Fn::ImportValue": !Sub "${ProjectName}-OriginVerifySecretArn" }
+      Actions:
+        - { Type: forward, TargetGroupArn: !Ref FrontendTargetGroup }
+
+  # ---------- ALB interne (sous-reseaux LB internes 41/42) ----------
+  InternalAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb-internal"
+      Scheme: internal
+      Type: application
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-SgAlbInternalId" }
+      Subnets:
+        - { "Fn::ImportValue": !Sub "${ProjectName}-LbSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${ProjectName}-LbSubnetBId" }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-backend"
+      VpcId: { "Fn::ImportValue": !Sub "${ProjectName}-VpcId" }
+      Protocol: HTTP
+      Port: !Ref BackendPort
+      TargetType: instance
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "30" }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+
+  InternalListenerHttps:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: InternalHttps
+    Properties:
+      LoadBalancerArn: !Ref InternalAlb
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref InternalCertificateArn
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref BackendTargetGroup }
+
+  InternalListenerHttp:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: InternalHttp
+    Properties:
+      LoadBalancerArn: !Ref InternalAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref BackendTargetGroup }
+
+Outputs:
+  PublicAlbArn:
+    Value: !Ref PublicAlb
+    Export: { Name: !Sub "${ProjectName}-PublicAlbArn" }
+  PublicAlbDns:
+    Value: !GetAtt PublicAlb.DNSName
+    Export: { Name: !Sub "${ProjectName}-PublicAlbDns" }
+  PublicAlbFullName:
+    Value: !GetAtt PublicAlb.LoadBalancerFullName
+    Export: { Name: !Sub "${ProjectName}-PublicAlbFullName" }
+  InternalAlbDns:
+    Value: !GetAtt InternalAlb.DNSName
+    Export: { Name: !Sub "${ProjectName}-InternalAlbDns" }
+  InternalAlbFullName:
+    Value: !GetAtt InternalAlb.LoadBalancerFullName
+    Export: { Name: !Sub "${ProjectName}-InternalAlbFullName" }
+  FrontendTargetGroupArn:
+    Value: !Ref FrontendTargetGroup
+    Export: { Name: !Sub "${ProjectName}-FrontendTgArn" }
+  FrontendTargetGroupFullName:
+    Value: !GetAtt FrontendTargetGroup.TargetGroupFullName
+    Export: { Name: !Sub "${ProjectName}-FrontendTgFullName" }
+  BackendTargetGroupArn:
+    Value: !Ref BackendTargetGroup
+    Export: { Name: !Sub "${ProjectName}-BackendTgArn" }
+  BackendTargetGroupFullName:
+    Value: !GetAtt BackendTargetGroup.TargetGroupFullName
+    Export: { Name: !Sub "${ProjectName}-BackendTgFullName" }
